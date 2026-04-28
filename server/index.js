@@ -1,9 +1,15 @@
+import "dotenv/config";
 import { createServer } from "http";
 import { randomUUID } from "crypto";
 import WebSocket, { WebSocketServer } from "ws";
 import { readFileSync, existsSync } from "fs";
 import { join, extname } from "path";
 import { fileURLToPath } from "url";
+import express from "express";
+import cors from "cors";
+import mongoose from "mongoose";
+import authRoutes from "./routes/auth.js";
+import { verifyWebSocketToken } from "./middleware/auth.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const clientDistPath = join(__dirname, "../client/dist");
@@ -28,8 +34,59 @@ const mimeTypes = {
   ".eot": "application/vnd.ms-fontobject",
 };
 
+const app = express();
 const rooms = new Map();
 
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Connect to MongoDB
+if (process.env.MONGODB_URI) {
+  mongoose
+    .connect(process.env.MONGODB_URI)
+    .then(() => console.log("Connected to MongoDB"))
+    .catch((err) => console.error("MongoDB connection error:", err));
+}
+
+// Routes
+app.use("/api/auth", authRoutes);
+
+app.get("/health", (req, res) => {
+  res.json({ ok: true });
+});
+
+// Serve static files
+app.get("*", (req, res) => {
+  if (req.url.includes(".")) {
+    const filePath = join(clientDistPath, req.url);
+    if (filePath.startsWith(clientDistPath) && existsSync(filePath)) {
+      try {
+        const ext = extname(filePath);
+        const mimeType = mimeTypes[ext] || "application/octet-stream";
+        const content = readFileSync(filePath);
+        res.setHeader("Content-Type", mimeType);
+        res.send(content);
+        return;
+      } catch {
+        res.status(404).send("Not found");
+        return;
+      }
+    }
+  }
+
+  // Serve index.html for all other routes (SPA)
+  try {
+    const indexPath = join(clientDistPath, "index.html");
+    const content = readFileSync(indexPath);
+    res.setHeader("Content-Type", "text/html");
+    res.send(content);
+  } catch {
+    res.status(500).send("Internal server error");
+  }
+});
+
+// Room management functions
 function ensureRoom(roomName) {
   if (!rooms.has(roomName)) {
     rooms.set(roomName, {
@@ -74,63 +131,16 @@ function createMessage(user, text) {
   };
 }
 
-function serveStatic(filePath, res) {
-  try {
-    const ext = extname(filePath);
-    const mimeType = mimeTypes[ext] || "application/octet-stream";
-    const content = readFileSync(filePath);
-    res.writeHead(200, { "Content-Type": mimeType });
-    res.end(content);
-  } catch {
-    res.writeHead(404);
-    res.end("Not found");
-  }
-}
-
-function serveIndexHTML(res) {
-  try {
-    const indexPath = join(clientDistPath, "index.html");
-    const content = readFileSync(indexPath);
-    res.writeHead(200, { "Content-Type": "text/html" });
-    res.end(content);
-  } catch {
-    res.writeHead(500);
-    res.end("Internal server error");
-  }
-}
-
-const httpServer = createServer((req, res) => {
-  if (req.url === "/health") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
-    return;
-  }
-
-  // Try to serve static files from dist directory
-  if (req.url !== "/" && req.url.includes(".")) {
-    const filePath = join(clientDistPath, req.url);
-    // Prevent directory traversal
-    if (filePath.startsWith(clientDistPath)) {
-      if (existsSync(filePath)) {
-        serveStatic(filePath, res);
-        return;
-      }
-    }
-  }
-
-  // For all other routes, serve index.html (client-side routing)
-  serveIndexHTML(res);
-});
-
+// WebSocket server
+const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on("connection", (socket) => {
   socket.meta = {
     user: null,
     roomName: null,
+    authenticated: false,
   };
-
-  send(socket, { type: "connected" });
 
   socket.on("message", (rawData) => {
     const data = safeJsonParse(rawData.toString());
@@ -138,10 +148,30 @@ wss.on("connection", (socket) => {
       return;
     }
 
+    // Authenticate with JWT token
+    if (data.type === "auth") {
+      const user = verifyWebSocketToken(data.token);
+      if (user) {
+        socket.meta.authenticated = true;
+        socket.meta.user = user;
+        send(socket, { type: "authenticated" });
+      } else {
+        send(socket, { type: "error", message: "Authentication failed" });
+        socket.close();
+      }
+      return;
+    }
+
+    if (!socket.meta.authenticated) {
+      send(socket, { type: "error", message: "Not authenticated" });
+      return;
+    }
+
     if (data.type === "join") {
       const roomName = String(data.room || "").trim();
-      const user = data.user;
-      if (!roomName || !user?.id || !user?.displayName) {
+      const displayName = data.displayName;
+
+      if (!roomName || !displayName) {
         return;
       }
 
@@ -152,7 +182,7 @@ wss.on("connection", (socket) => {
 
       const room = ensureRoom(roomName);
       room.clients.add(socket);
-      socket.meta = { roomName, user };
+      socket.meta = { ...socket.meta, roomName, displayName };
 
       send(socket, {
         type: "history",
@@ -165,7 +195,7 @@ wss.on("connection", (socket) => {
         room: roomName,
         message: {
           id: randomUUID(),
-          text: `${user.displayName} joined ${roomName}`,
+          text: `${displayName} joined ${roomName}`,
           timestamp: new Date().toISOString(),
         },
       });
@@ -175,15 +205,15 @@ wss.on("connection", (socket) => {
 
     if (data.type === "message") {
       const roomName = socket.meta.roomName;
-      const user = socket.meta.user;
+      const displayName = socket.meta.displayName;
       const text = String(data.text || "").trim();
 
-      if (!roomName || !user || !text) {
+      if (!roomName || !displayName || !text) {
         return;
       }
 
       const room = ensureRoom(roomName);
-      const message = createMessage(user, text);
+      const message = createMessage(displayName, text);
       room.history.push(message);
 
       if (room.history.length > MAX_HISTORY) {
@@ -199,7 +229,7 @@ wss.on("connection", (socket) => {
   });
 
   socket.on("close", () => {
-    if (!socket.meta.roomName || !socket.meta.user) {
+    if (!socket.meta.roomName || !socket.meta.displayName) {
       return;
     }
 
@@ -211,7 +241,7 @@ wss.on("connection", (socket) => {
       room: socket.meta.roomName,
       message: {
         id: randomUUID(),
-        text: `${socket.meta.user.displayName} left ${socket.meta.roomName}`,
+        text: `${socket.meta.displayName} left ${socket.meta.roomName}`,
         timestamp: new Date().toISOString(),
       },
     });
@@ -219,5 +249,5 @@ wss.on("connection", (socket) => {
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`WebSocket chat server listening on http://localhost:${PORT}`);
+  console.log(`Server listening on http://localhost:${PORT}`);
 });

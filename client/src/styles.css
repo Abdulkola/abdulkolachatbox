@@ -57,6 +57,54 @@ a {
   color: #5f6368;
 }
 
+.header-section {
+  margin-bottom: 1.5rem;
+}
+
+.user-section {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.user-info {
+  margin-bottom: 0.75rem;
+}
+
+.user-info strong {
+  display: block;
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.user-info small {
+  display: block;
+  color: #5f6368;
+  font-size: 0.85rem;
+  margin-top: 0.25rem;
+  word-break: break-word;
+}
+
+.logout-btn {
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  background: #fee;
+  color: #c33;
+  border: 1px solid #f0bbbb;
+  border-radius: 0.65rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+
+.logout-btn:hover {
+  background: #fdd;
+  border-color: #e0aaaa;
+  transform: translateY(-1px);
+}
+
 .panel,
 .tip-card,
 .welcome-card,

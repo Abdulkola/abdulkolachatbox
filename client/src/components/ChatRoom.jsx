@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { useParams } from "react-router-dom";
-import { useUser } from "../context/UserContext";
 import { useSocket } from "../hooks/useSocket";
 import { setCurrentRoom } from "../store/chatSlice";
 
@@ -12,7 +11,7 @@ function formatTime(isoDate) {
   });
 }
 
-export default function ChatRoom() {
+export default function ChatRoom({ token, user }) {
   const { roomName: encodedRoomName } = useParams();
   const roomName = useMemo(
     () => decodeURIComponent(encodedRoomName || "").trim(),
@@ -20,7 +19,6 @@ export default function ChatRoom() {
   );
 
   const dispatch = useDispatch();
-  const { profile } = useUser();
   const [draft, setDraft] = useState("");
 
   const messages = useSelector(
@@ -32,7 +30,7 @@ export default function ChatRoom() {
     dispatch(setCurrentRoom(roomName));
   }, [dispatch, roomName]);
 
-  const { sendMessage } = useSocket({ roomName, user: profile });
+  const { sendMessage } = useSocket({ roomName, user, token });
 
   const onSubmit = (event) => {
     event.preventDefault();
@@ -60,7 +58,7 @@ export default function ChatRoom() {
         )}
 
         {messages.map((message) => {
-          const own = message.user?.id === profile.id;
+          const own = message.user === user.displayName;
           if (message.kind === "system") {
             return (
               <div key={message.id} className="system-message">
@@ -76,7 +74,7 @@ export default function ChatRoom() {
               className={`bubble ${own ? "mine" : "theirs"}`}
             >
               <header>
-                <strong>{message.user.displayName}</strong>
+                <strong>{message.user}</strong>
                 <small>{formatTime(message.timestamp)}</small>
               </header>
               <p>{message.text}</p>
