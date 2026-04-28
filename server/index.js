@@ -1,9 +1,32 @@
 import { createServer } from "http";
 import { randomUUID } from "crypto";
 import WebSocket, { WebSocketServer } from "ws";
+import { readFileSync, existsSync } from "fs";
+import { join, extname } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
+const clientDistPath = join(__dirname, "../client/dist");
 
 const PORT = Number(process.env.PORT) || 8080;
 const MAX_HISTORY = 100;
+
+// MIME types for common file extensions
+const mimeTypes = {
+  ".html": "text/html",
+  ".js": "application/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".eot": "application/vnd.ms-fontobject",
+};
 
 const rooms = new Map();
 
@@ -51,6 +74,31 @@ function createMessage(user, text) {
   };
 }
 
+function serveStatic(filePath, res) {
+  try {
+    const ext = extname(filePath);
+    const mimeType = mimeTypes[ext] || "application/octet-stream";
+    const content = readFileSync(filePath);
+    res.writeHead(200, { "Content-Type": mimeType });
+    res.end(content);
+  } catch {
+    res.writeHead(404);
+    res.end("Not found");
+  }
+}
+
+function serveIndexHTML(res) {
+  try {
+    const indexPath = join(clientDistPath, "index.html");
+    const content = readFileSync(indexPath);
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(content);
+  } catch {
+    res.writeHead(500);
+    res.end("Internal server error");
+  }
+}
+
 const httpServer = createServer((req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -58,8 +106,20 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  res.writeHead(404);
-  res.end();
+  // Try to serve static files from dist directory
+  if (req.url !== "/" && req.url.includes(".")) {
+    const filePath = join(clientDistPath, req.url);
+    // Prevent directory traversal
+    if (filePath.startsWith(clientDistPath)) {
+      if (existsSync(filePath)) {
+        serveStatic(filePath, res);
+        return;
+      }
+    }
+  }
+
+  // For all other routes, serve index.html (client-side routing)
+  serveIndexHTML(res);
 });
 
 const wss = new WebSocketServer({ server: httpServer });
